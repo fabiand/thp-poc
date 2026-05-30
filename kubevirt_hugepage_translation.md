@@ -10,7 +10,7 @@ Deliver intent-based memory allocation. Users request hugepages. Platform decide
 **The Solution (Translation at Submission):**
 * **Cluster Switch:** Add `translateHugepagesToMadvise: true` to the KubeVirt CR.
 * **Intercept:** Mutating Admission Webhook catches the VM creation request.
-* **Translate Pod:** Strip the `hugepages-2Mi` request. Replace with standard `memory` request. Scheduler handles it normally.
+* **Translate Pod:** Retain the `hugepages-2Mi` request in the VMI for tracking user intent, but omit it from the generated Pod specification. Replace it in the Pod spec with an equivalent standard `memory` request so `kube-scheduler` handles it normally.
 * **Inject XML:** Configure the system to inject the following Libvirt XML:
   * `<locked/>` (mlock)
   * `<allocation mode='immediate'/>` (prealloc)
@@ -31,9 +31,50 @@ Deliver intent-based memory allocation. Users request hugepages. Platform decide
 * **Lifecycle Watch:** `virt-handler` monitors domain events on the host node. When a VM moves to the `Running` state, it hooks into the initialization sequence.
 * **Buddyinfo Evaluation:** `virt-handler` checks `/proc/buddyinfo` on the host to verify contiguous 2MB blocks exist.
 * **If available:** `virt-handler` maps the QEMU PID address range from the host namespace and triggers `process_madvise(MADV_COLLAPSE)` using its native host root privileges.
-* **If unavailable:** `virt-handler` skips the system call, letting QEMU fallback to standard 4KB pages to avoid pinning fragmented memory and causing host-level stalls.
+* **If unavailable or fails:** `virt-handler` skips or exits the `process_madvise` call. QEMU retains its initial `MADV_HUGEPAGE` hint configuration. The memory remains fully preallocated and locked as 4KB pages, and the `khugepaged` background daemon asynchronously tries its best to collapse the blocks later as memory frees up.
 
 **Why this works:**
 * Clean UX. Users just ask for hugepages without tracking infrastructure changes or capabilities.
 * Zero custom scheduling logic in KubeVirt. `kube-scheduler` tracks standard RAM.
 * Smooth live migrations (standard RAM vs rigid HugeTLB pools).
+
+## Decision Flow Diagram
+
+```mermaid
+graph TD
+    subgraph "Phase 1: VM Submission via Mutating Admission Webhook"
+    A[VM Creation Request] --> B{KubeVirt CR Switch:\ntranslateHugepagesToMadvise == true?}
+
+    B -- No --> C[Standard Scheduling Path]
+
+    B -- Yes --> D{VMI Spec requests\nhugepages-2Mi?}
+
+    D -- No --> C
+
+    D -- Yes --> E[Action:\n1. Retain hugepages-2Mi request in VMI\n2. Omit hugepages request from Pod spec\n3. Add equivalent standard Memory request to Pod spec\n4. Inject Libvirt XML: locked, immediate allocation, anonymous source]
+    end
+
+    E --> F[kube-scheduler handles Pod normally\nTracks standard RAM instead of static HugeTLB pools]
+    F --> G[virt-launcher Pod starts:\nQEMU executes mmap plus MADV_HUGEPAGE hint,\nruns 4KB prealloc touch loop, and applies mlock]
+
+    subgraph "Phase 2: Runtime Lifecycle via virt-handler Node Daemon"
+    G --> H{virt-handler detects\nDomain moves to Running state}
+
+    H --> I[Action:\nEvaluate /proc/buddyinfo on Host]
+
+    I --> J{Sufficient contiguous\n2MB blocks exist?}
+
+    J -- No --> K[Action:\nSkip process_madvise call]
+
+    J -- Yes --> M[Action:\n1. Map QEMU PID virtual address range from host namespace\n2. Execute root-privileged process_madvise using MADV_COLLAPSE]
+
+    M --> O{process_madvise\nExecution Status?}
+
+    O -- Success --> P[Result:\nKernel atomically migrates pinned 4KB layouts\ninto cohesive 2MB Huge Pages]
+
+    O -- Failure --> Q[Fallback Path:\nRetain QEMU initial MADV_HUGEPAGE configuration]
+    K --> Q
+
+    Q --> R[Result:\nVM continues running with initial MADV_HUGEPAGE hint intact.\nMemory remains fully preallocated and locked as 4KB pages.\nkhugepaged background daemon asynchronously tries its best\nto collapse pages later as contiguous blocks become available.]
+    end
+```
