@@ -11,7 +11,7 @@ Deliver intent-based memory allocation. Users request hugepages. Platform decide
 * **Cluster Switch:** Add `translateHugepagesToMadvise: true` to the KubeVirt CR.
 * **Intercept:** Mutating Admission Webhook catches the VM creation request.
 * **Translate Pod:** Strip the `hugepages-2Mi` request. Replace with standard `memory` request. Scheduler handles it normally.
-* **Inject XML:** Configure `virt-launcher` (via controller or hook sidecar) to inject the following Libvirt XML:
+* **Inject XML:** Configure the system to inject the following Libvirt XML:
   * `<locked/>` (mlock)
   * `<allocation mode='immediate'/>` (prealloc)
   * `<source type='anonymous'/>` (THP trigger)
@@ -26,13 +26,14 @@ Deliver intent-based memory allocation. Users request hugepages. Platform decide
 * **TLB Anchor:** Permanently pins the physical-to-virtual path. Keeps high-value 2MB TLB cache entries completely hot.
 * **Kill Background Stalls:** Forces immediate materialization at allocation. Removes the memory region from `khugepaged` scanning, wiping out background daemon CPU jitter.
 
-**Smart Fallback via Hook Sidecar:**
-* Run a hook sidecar in the `virt-launcher` pod before QEMU boots.
-* Read `/proc/buddyinfo` to verify contiguous 2MB blocks exist.
-* **If available:** Inject the XML. QEMU handles mmap -> madvise -> prealloc -> mlock in order.
-* **If unavailable:** Skip XML injection. QEMU falls back to standard 4KB pages. Prevents locking fragmented 4KB pages and causing db stalls.
+**Smart Fallback and Collapse via Node Handler (virt-handler):**
+* **Zero Pod Overhead:** Eliminates pod-level sidecars, user-facing annotations, and the need to give user pods `CAP_SYS_NICE` privileges.
+* **Lifecycle Watch:** `virt-handler` monitors domain events on the host node. When a VM moves to the `Running` state, it hooks into the initialization sequence.
+* **Buddyinfo Evaluation:** `virt-handler` checks `/proc/buddyinfo` on the host to verify contiguous 2MB blocks exist.
+* **If available:** `virt-handler` maps the QEMU PID address range from the host namespace and triggers `process_madvise(MADV_COLLAPSE)` using its native host root privileges.
+* **If unavailable:** `virt-handler` skips the system call, letting QEMU fallback to standard 4KB pages to avoid pinning fragmented memory and causing host-level stalls.
 
 **Why this works:**
-* Clean UX. Users just ask for hugepages.
+* Clean UX. Users just ask for hugepages without tracking infrastructure changes or capabilities.
 * Zero custom scheduling logic in KubeVirt. `kube-scheduler` tracks standard RAM.
 * Smooth live migrations (standard RAM vs rigid HugeTLB pools).
