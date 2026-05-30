@@ -16,6 +16,11 @@ Deliver intent-based memory allocation. Users request hugepages. Platform decide
   * `<allocation mode='immediate'/>` (prealloc)
   * `<source type='anonymous'/>` (THP trigger)
 
+**Why preallocation is critical for THP:**
+* **Beat Fragmentation:** `mmap` and `madvise` are lazy. Preallocation forces the kernel to allocate 2MB blocks immediately at boot when memory is cleanest, rather than relying on runtime page faults when the node is already fragmented.
+* **Dense Mapping:** Touching every 4KB page boundary prevents partial mappings. It guarantees the entire 2MB block is fully populated and backed by physical RAM with zero lazy allocation overhead.
+* **Decouple Lock Contention:** Populating physical pages via a touch loop first prevents the kernel from choking on lock contention if it tries to allocate and `mlock` raw virtual ranges under a single heavy lock context.
+
 **Why mlock is critical for THP:**
 * **Anti-Splitting:** Prevents the kernel from splitting pristine 2MB pages back to 4KB pages under heavy host memory pressure.
 * **TLB Anchor:** Permanently pins the physical-to-virtual path. Keeps high-value 2MB TLB cache entries completely hot.
