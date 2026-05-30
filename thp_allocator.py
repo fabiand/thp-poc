@@ -29,7 +29,6 @@ def parse_size(size_str):
     return int(size_str)
 
 def get_thp_and_locked_status(start_addr):
-    """Parses smaps to extract both THP and Locked metrics for our memory block."""
     anon_huge_pages = 0
     locked_pages = 0
     in_range = False
@@ -51,15 +50,12 @@ def verify_locked_thp_efficiency(label, start_addr, target_bytes):
     huge_kb, locked_kb = get_thp_and_locked_status(start_addr)
     target_kb = target_bytes / 1024
     
-    # Calculate what percentage of the locked memory is actually huge pages
     thp_of_locked_pct = (huge_kb / locked_kb * 100) if locked_kb > 0 else 0
     overall_coverage = (huge_kb / target_kb * 100)
     
     print(f"\nCHECKPOINT [{label}]:")
     print(f" -> Total Locked Memory: {locked_kb:,.0f} kB / {target_kb:,.0f} kB")
     print(f" -> Of that, THP Backed: {huge_kb:,.0f} kB ({thp_of_locked_pct:.2f}%)")
-    
-    # Custom regex string output for the test matrix runner to intercept
     print(f"CHECKPOINT [{label}]: {overall_coverage:.2f}%")
 
 def main():
@@ -68,10 +64,22 @@ def main():
 
     parser = argparse.ArgumentParser(description="Standalone THP Allocator Utility")
     parser.add_argument("memory", help="Memory size (e.g., 512M, 1G)")
-    parser.add_argument("--madvise", choices=["none", "hugepage", "collapse"], required=True)
+    parser.add_argument(
+        "--madvise", 
+        choices=["none", "n", "hugepage", "hp", "collapse", "cl"], 
+        required=True,
+        help="THP strategy. Options: none (n), hugepage (hp), collapse (cl)"
+    )
     parser.add_argument("--duration", type=int, default=10)
     args = parser.parse_args()
 
+    # Normalize abbreviations to standard strings
+    strategy_map = {
+        "n": "none", "none": "none",
+        "hp": "hugepage", "hugepage": "hugepage",
+        "cl": "collapse", "collapse": "collapse"
+    }
+    madv_strategy = strategy_map[args.madvise.lower()]
     num_bytes = parse_size(args.memory)
     
     # 1. mmap
@@ -79,7 +87,7 @@ def main():
     mem_address = ctypes.addressof(ctypes.c_char.from_buffer(mem))
 
     # 2. Pre-madvise (Async HUGEPAGE)
-    if args.madvise == "hugepage":
+    if madv_strategy == "hugepage":
         mem.madvise(mmap.MADV_HUGEPAGE)
 
     # 3. Preallocation (QEMU 4KB Touch loop)
@@ -92,19 +100,14 @@ def main():
         sys.exit(1)
 
     # 5. Post-mlock / Post-alloc madvise (Sync COLLAPSE)
-    if args.madvise == "collapse":
+    if madv_strategy == "collapse":
         try:
             mem.madvise(MADV_COLLAPSE)
         except OSError as e:
             print(f"[-] MADV_COLLAPSE failed: {e}", file=sys.stderr)
 
-    # Evaluate validation metrics immediately
     verify_locked_thp_efficiency("IMMEDIATE", mem_address, num_bytes)
-
-    # Settle time
     time.sleep(args.duration)
-
-    # Evaluate validation metrics after background settlement window
     verify_locked_thp_efficiency("FINAL", mem_address, num_bytes)
 
     # Cleanup
