@@ -1,0 +1,16 @@
+apiVersion: kubevirt.io/v1
+kind: VirtualMachineInstance
+metadata:
+  name: vmi-clean-thp
+spec:
+  domain:
+    resources:
+      requests:
+        memory: 4Gi
+    memory:
+      hugepages: {} # Cluster webhook translates this to standard memory, Handler does the rest
+    devices:
+      disks:
+        - name: containerdisk
+          containerDisk:
+            image: quay.io/kubevirt/cirros-container-disk-demo:latest
