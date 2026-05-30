@@ -49,6 +49,6 @@ A `unittest` script that runs the allocator inside isolated subprocesses. Using 
 Run the automated test matrix with standard verbose output:
 
 ```bash
-sudo ./test_thp_matrix.py 1G --duration 5 -v
+sudo python3 test_thp_matrix.py 1G --duration 5 -v
 
 ```
