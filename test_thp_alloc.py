@@ -56,7 +56,7 @@ def get_thp_coverage(start_addr):
 def main():
     check_root()
 
-    parser = argparse.ArgumentParser(description="Test locked THP memory coverage (Dynamic Order).")
+    parser = argparse.ArgumentParser(description="Test THP collapse on locked memory mappings.")
     parser.add_argument("memory", help="Amount of memory to allocate (e.g., 2G, 512M)")
     parser.add_argument(
         "--madvise", 
@@ -93,20 +93,20 @@ def main():
     for i in range(0, num_bytes, 4096):
         mem[i] = 0
 
-    # 4. Case COLLAPSE: Advise AFTER faulting pages (synchronous merge)
+    # 4. mlock (Pin the pages while they are still standard 4KB blocks)
+    print("[*] Locking memory via mlock...")
+    if libc.mlock(ctypes.c_void_p(mem_address), ctypes.c_size_t(num_bytes)) != 0:
+        print(f"[-] mlock failed with errno {ctypes.get_errno()}")
+        sys.exit(1)
+
+    # 5. Case COLLAPSE: Advise AFTER memory has been preallocated AND locked
     if args.madvise == "collapse":
-        print(f"[*] Advising kernel with {flag_name} ({advise_flag})...")
+        print(f"[*] Forcing synchronous {flag_name} ({advise_flag}) on ALREADY LOCKED memory...")
         try:
             mem.madvise(advise_flag)
         except OSError as e:
             print(f"[-] madvise failed: {e}")
             sys.exit(1)
-
-    # 5. mlock (Pin the final huge pages)
-    print("[*] Locking memory via mlock...")
-    if libc.mlock(ctypes.c_void_p(mem_address), ctypes.c_size_t(num_bytes)) != 0:
-        print(f"[-] mlock failed with errno {ctypes.get_errno()}")
-        sys.exit(1)
 
     print(f"[*] Waiting {args.duration} seconds...")
     time.sleep(args.duration)
@@ -118,7 +118,7 @@ def main():
     if coverage < 95:
         print("[!] WARNING: Kernel fell back to 4KB pages.")
     else:
-        print("[+] SUCCESS: Memory is backed by 2MB Huge Pages.")
+        print("[+] SUCCESS: Memory successfully collapsed into 2MB Huge Pages after locking.")
 
 if __name__ == "__main__":
     main()
