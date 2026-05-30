@@ -1,5 +1,8 @@
 
 > Human touch: This is AI slop. I need a skill to make AI write more human like.
+> tldr;
+> 1. enable=madv, thp, preallocate, lock (!) to avoid that this setup will be ever split again
+> 2. alt: MADV_COLLAPSE to sync force collapse into 2M during bootup, combined with lock this will then stay as "static locked 2M HPs"
 
 # THP Memory Test Suite
 
