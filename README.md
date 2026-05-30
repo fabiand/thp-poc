@@ -1,49 +1,49 @@
-# THP Memory Allocation Strategy & Verification Suite
+# THP Memory Test Suite
 
-This repository contains tools to validate, benchmark, and emulate the precise host-level memory lifecycle used by hypervisors (like QEMU) and orchestrators (like KubeVirt) when utilizing Transparent Huge Pages (THP) alongside memory pinning.
+This repository contains tools to verify and test the memory lifecycle used by hypervisors (like QEMU) and orchestrators (like KubeVirt) when using Transparent Huge Pages (THP) and memory pinning.
 
-## Core Allocation Lifecycle
+## Memory Allocation Steps
 
-To achieve deterministic memory performance with THP, the allocation sequence must follow a strict operational order:
+To get predictable memory performance with THP, the allocation must follow a strict order:
 
-* **System-Level `madvise`:** The host must have `/sys/kernel/mm/transparent_hugepage/enabled` configured strictly to `[madvise]`. This prevents global untracked background allocations while allowing targeted workloads to explicitly request huge pages.
-* **1. Virtual Allocation (`mmap`):** Draw the boundaries for anonymous private memory space.
-* **2. Async Hinting (`MADV_HUGEPAGE`):** Apply the kernel hint right after allocation while the address block is still empty.
-* **3. Eager Preallocation (The Touch Loop):** Iterate through the memory block at a strict **4KB page granularity**. This forces the kernel to process physical page faults at allocation time, eliminating lazy mapping traps and ensuring full density.
-* **4. Memory Pinning (`mlock`):** Secure the fully materialized pages in physical RAM. This anchors the physical path, keeps CPU TLB cache entries hot, and completely blocks the kernel from splitting 2MB structures back into 4KB pieces under system memory pressure.
-
----
-
-## The External Collapse Strategy
-
-Upstream QEMU cannot natively use `MADV_COLLAPSE` for VM memory initialization due to a Catch-22: `MADV_COLLAPSE` is a synchronous command that fails with `EINVAL` if the targeted memory range isn't already resident in physical RAM.
-
-To circumvent this limitation on fragmented host nodes, we offload the compaction step to an infrastructure handler or external sidecar:
-
-* **Post-Lock Compaction:** The memory is mapped, preallocated at 4KB, and pinned with `mlock` exactly how QEMU expects.
-* **`process_madvise` Interception:** An external privileged daemon (like KubeVirt's `virt-handler` using host root permissions, or a sidecar container using `CAP_SYS_NICE`) watches the process.
-* **Synchronous Upgrade:** The handler locates QEMU’s RAM address range from the host namespace and triggers a remote `process_madvise(MADV_COLLAPSE)`.
-* **Atomic Migration:** The kernel atomically migrates the pinned 4KB layouts into cohesive 2MB huge pages under the hood, transferring the lock states seamlessly without QEMU even realizing its underlying structure was upgraded.
+* **System-Level Configuration:** Set `/sys/kernel/mm/transparent_hugepage/enabled` to `[madvise]`. This stops untracked background allocations while letting specific programs request huge pages.
+* **1. Virtual Allocation (`mmap`):** Create the virtual memory space.
+* **2. Hinting (`MADV_HUGEPAGE`):** Apply the kernel hint right after allocation while the address block is empty.
+* **3. Preallocation (Touch Loop):** Step through the memory block at a strict **4KB page granularity**. This forces the kernel to handle physical page faults immediately, ensuring the memory is fully populated.
+* **4. Memory Pinning (`mlock`):** Lock the pages in RAM. This keeps the CPU TLB cache entries active and stops the kernel from splitting 2MB pages back into 4KB pieces under memory pressure.
 
 ---
 
-## Included Utilities
+## External Collapse Strategy
 
-### 1. Standalone Utility (`thp_allocator.py`)
+QEMU cannot use `MADV_COLLAPSE` on its own during startup because `MADV_COLLAPSE` requires memory to already be present in physical RAM, or it returns an error.
 
-A single-purpose memory engine executing the strict QEMU lifecycle order. Features abbreviation flags for quick evaluation:
+To solve this on fragmented host nodes, we move the compaction step to an external handler:
 
-* `n` / `none`: Standard 4KB baseline footprint.
-* `hp` / `hugepage`: Asynchronous forward-looking hint.
-* `cl` / `collapse`: Post-lock synchronous compaction validation.
+* **Post-Lock Compaction:** Memory is mapped, preallocated at 4KB, and pinned with `mlock` exactly as QEMU expects.
+* **Interception:** A privileged daemon (like KubeVirt's `virt-handler` or a sidecar with `CAP_SYS_NICE`) watches the process.
+* **Upgrade:** The handler finds QEMU’s RAM address range and triggers `process_madvise(MADV_COLLAPSE)` from the outside.
+* **Migration:** The kernel merges the pinned 4KB layouts into 2MB huge pages and transfers the lock states automatically.
 
-### 2. Matrix Verification Engine (`test_thp_matrix.py`)
+---
 
-A standard Python `unittest` suite that orchestrates the core allocator inside completely isolated subprocesses. Running via subprocess ensures previous runs never introduce memory footprint contamination.
+## Available Tools
 
-### Execution
+### 1. Standalone Script (`thp_allocator.py`)
 
-Run the automated matrix suite with standard verbose output:
+A script that runs the strict allocation order. It accepts short flags for testing:
+
+* `n` / `none`: Standard 4KB baseline.
+* `hp` / `hugepage`: Asynchronous hint.
+* `cl` / `collapse`: Post-lock synchronous compaction.
+
+### 2. Matrix Runner (`test_thp_matrix.py`)
+
+A `unittest` script that runs the allocator inside isolated subprocesses. Using separate processes ensures previous runs do not affect the next test.
+
+### Running the Tests
+
+Run the automated test matrix with standard verbose output:
 
 ```bash
 sudo ./test_thp_matrix.py 1G --duration 5 -v
