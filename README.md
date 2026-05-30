@@ -1,3 +1,6 @@
+
+> Human touch: This is AI slop. I need a skill to make AI write more human like.
+
 # THP Memory Test Suite
 
 This repository contains tools to verify and test the memory lifecycle used by hypervisors (like QEMU) and orchestrators (like KubeVirt) when using Transparent Huge Pages (THP) and memory pinning.
