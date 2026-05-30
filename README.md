@@ -3,6 +3,7 @@
 > tldr;
 > 1. enable=madv, thp, preallocate, lock (!) to avoid that this setup will be ever split again
 > 2. alt: MADV_COLLAPSE to sync force collapse into 2M during bootup, combined with lock this will then stay as "static locked 2M HPs"
+> effect: static (locked) hugepages for VMs - achieved in two different ways, one with less (MADV_HP) one with more (MADV_COL) guarantees
 
 # THP Memory Test Suite
 
