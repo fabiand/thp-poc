@@ -36,8 +36,11 @@ class TestTHPAllocatingMatrix(unittest.TestCase):
         # Execute process safely with captured outputs
         res = subprocess.run(cmd, capture_output=True, text=True)
         
-        # Assert clean runtime execution
-        self.assertEqual(res.returncode, 0, f"Allocator crashed: {res.stderr}")
+        # Tolerate allocator exits: log it into the matrix results first, then fail the test case
+        if res.returncode != 0:
+            MATRIX_RESULTS.append((display_name, "FAIL", "FAIL"))
+            error_msg = res.stderr.strip() or res.stdout.strip()
+            self.fail(f"Allocator exited with code {res.returncode}. Error: {error_msg}")
 
         # Parse coverage string metrics via regular expressions
         imm_match = re.search(r"CHECKPOINT \[IMMEDIATE\]:\s*([\d.]+)%", res.stdout)

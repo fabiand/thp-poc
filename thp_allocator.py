@@ -73,7 +73,6 @@ def main():
     parser.add_argument("--duration", type=int, default=10)
     args = parser.parse_args()
 
-    # Normalize abbreviations to standard strings
     strategy_map = {
         "n": "none", "none": "none",
         "hp": "hugepage", "hugepage": "hugepage",
@@ -88,7 +87,12 @@ def main():
 
     # 2. Pre-madvise (Async HUGEPAGE)
     if madv_strategy == "hugepage":
-        mem.madvise(mmap.MADV_HUGEPAGE)
+        try:
+            mem.madvise(mmap.MADV_HUGEPAGE)
+        except OSError as e:
+            print(f"[-] MADV_HUGEPAGE failed: {e}", file=sys.stderr)
+            mem.close()
+            sys.exit(1)
 
     # 3. Preallocation (QEMU 4KB Touch loop)
     for i in range(0, num_bytes, 4096):
@@ -97,6 +101,7 @@ def main():
     # 4. mlock
     if libc.mlock(ctypes.c_void_p(mem_address), ctypes.c_size_t(num_bytes)) != 0:
         print(f"[-] mlock failed with errno {ctypes.get_errno()}", file=sys.stderr)
+        mem.close()
         sys.exit(1)
 
     # 5. Post-mlock / Post-alloc madvise (Sync COLLAPSE)
@@ -105,6 +110,9 @@ def main():
             mem.madvise(MADV_COLLAPSE)
         except OSError as e:
             print(f"[-] MADV_COLLAPSE failed: {e}", file=sys.stderr)
+            libc.munlock(ctypes.c_void_p(mem_address), ctypes.c_size_t(num_bytes))
+            mem.close()
+            sys.exit(1)
 
     verify_locked_thp_efficiency("IMMEDIATE", mem_address, num_bytes)
     time.sleep(args.duration)
