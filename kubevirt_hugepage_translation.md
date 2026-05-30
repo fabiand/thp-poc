@@ -16,6 +16,11 @@ Deliver intent-based memory allocation. Users request hugepages. Platform decide
   * `<allocation mode='immediate'/>` (prealloc)
   * `<source type='anonymous'/>` (THP trigger)
 
+**Why mlock is critical for THP:**
+* **Anti-Splitting:** Prevents the kernel from splitting pristine 2MB pages back to 4KB pages under heavy host memory pressure.
+* **TLB Anchor:** Permanently pins the physical-to-virtual path. Keeps high-value 2MB TLB cache entries completely hot.
+* **Kill Background Stalls:** Forces immediate materialization at allocation. Removes the memory region from `khugepaged` scanning, wiping out background daemon CPU jitter.
+
 **Smart Fallback via Hook Sidecar:**
 * Run a hook sidecar in the `virt-launcher` pod before QEMU boots.
 * Read `/proc/buddyinfo` to verify contiguous 2MB blocks exist.
