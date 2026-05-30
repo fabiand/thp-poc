@@ -53,10 +53,16 @@ def get_thp_coverage(start_addr):
                 anon_huge_pages += int(line.split()[1])
     return anon_huge_pages
 
+def print_coverage_checkpoint(label, start_addr, target_bytes):
+    huge_kb = get_thp_coverage(start_addr)
+    coverage = (huge_kb / (target_bytes / 1024)) * 100
+    print(f" -> CHECKPOINT [{label}]: THP Coverage is {coverage:.2f}% ({huge_kb:,.0f} kB)")
+    return coverage
+
 def main():
     check_root()
 
-    parser = argparse.ArgumentParser(description="Test THP collapse on locked memory mappings.")
+    parser = argparse.ArgumentParser(description="Track dynamic THP coverage progression.")
     parser.add_argument("memory", help="Amount of memory to allocate (e.g., 2G, 512M)")
     parser.add_argument(
         "--madvise", 
@@ -74,51 +80,57 @@ def main():
     print(f"[*] Target allocation: {args.memory} ({num_bytes} bytes)")
     soft_check_buddyinfo(num_bytes)
 
-    # 1. mmap (Allocate virtual address space)
+    # 1. mmap
     print("[*] Allocating anonymous private memory...")
     mem = mmap.mmap(-1, num_bytes, flags=mmap.MAP_PRIVATE | mmap.MAP_ANONYMOUS, prot=mmap.PROT_READ | mmap.PROT_WRITE)
     mem_address = ctypes.addressof(ctypes.c_char.from_buffer(mem))
 
-    # 2. Case HUGEPAGE: Advise BEFORE faulting pages
+    # 2. Case HUGEPAGE: Advise BEFORE preallocation
     if args.madvise == "hugepage":
+        print_coverage_checkpoint("BEFORE MADV_HUGEPAGE", mem_address, num_bytes)
         print(f"[*] Advising kernel with {flag_name}...")
         try:
             mem.madvise(advise_flag)
         except OSError as e:
             print(f"[-] madvise failed: {e}")
             sys.exit(1)
+        print_coverage_checkpoint("IMMEDIATELY AFTER MADV_HUGEPAGE", mem_address, num_bytes)
 
     # 3. Preallocation (Touch every 4KB page)
     print("[*] Preallocating memory (faulting 4KB pages into physical RAM)...")
     for i in range(0, num_bytes, 4096):
         mem[i] = 0
 
-    # 4. mlock (Pin the pages while they are still standard 4KB blocks)
+    # 4. mlock
     print("[*] Locking memory via mlock...")
     if libc.mlock(ctypes.c_void_p(mem_address), ctypes.c_size_t(num_bytes)) != 0:
         print(f"[-] mlock failed with errno {ctypes.get_errno()}")
         sys.exit(1)
 
-    # 5. Case COLLAPSE: Advise AFTER memory has been preallocated AND locked
+    # 5. Case COLLAPSE: Advise AFTER memory has been preallocated and locked
     if args.madvise == "collapse":
-        print(f"[*] Forcing synchronous {flag_name} ({advise_flag}) on ALREADY LOCKED memory...")
+        print_coverage_checkpoint("BEFORE MADV_COLLAPSE", mem_address, num_bytes)
+        print(f"[*] Forcing synchronous {flag_name} on locked memory...")
         try:
             mem.madvise(advise_flag)
         except OSError as e:
             print(f"[-] madvise failed: {e}")
             sys.exit(1)
+        print_coverage_checkpoint("IMMEDIATELY AFTER MADV_COLLAPSE", mem_address, num_bytes)
 
-    print(f"[*] Waiting {args.duration} seconds...")
+    # 6. Wait for background activity settlement (Crucial for testing background hugepage mode)
+    print(f"[*] Sleeping for {args.duration} seconds...")
     time.sleep(args.duration)
 
-    huge_kb = get_thp_coverage(mem_address)
-    coverage = (huge_kb / (num_bytes / 1024)) * 100
+    # Final Verification Check
+    print("\n================ FINAL VERIFICATION ================")
+    final_coverage = print_coverage_checkpoint("POST-SLEEP FINAL CHECK", mem_address, num_bytes)
+    print("====================================================")
 
-    print(f"\nTarget: {num_bytes / 1024:,.0f} kB | Huge Pages: {huge_kb:,.0f} kB | Coverage: {coverage:.2f}%")
-    if coverage < 95:
-        print("[!] WARNING: Kernel fell back to 4KB pages.")
+    if final_coverage < 95:
+        print("[!] WARNING: Kernel fell back to standard 4KB mappings.")
     else:
-        print("[+] SUCCESS: Memory successfully collapsed into 2MB Huge Pages after locking.")
+        print("[+] SUCCESS: Memory is reliably backed by 2MB Huge Pages.")
 
 if __name__ == "__main__":
     main()
