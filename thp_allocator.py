@@ -14,6 +14,22 @@ def check_root():
         print("ERROR: Must run as root to lock memory and inspect smaps.", file=sys.stderr)
         sys.exit(1)
 
+def check_thp_madvise():
+    """Hard check ensuring system-level THP is set strictly to 'madvise'."""
+    path = "/sys/kernel/mm/transparent_hugepage/enabled"
+    try:
+        with open(path, "r") as f:
+            content = f.read().strip()
+            if "[madvise]" not in content:
+                print(f"ERROR: System-level THP is not configured to 'madvise'.", file=sys.stderr)
+                print(f"       Current configuration state: {content}", file=sys.stderr)
+                print(f"       Fix with: echo madvise > {path}", file=sys.stderr)
+                sys.exit(1)
+            print("[*] System-level THP verification passed: [madvise] is active.")
+    except FileNotFoundError:
+        print(f"ERROR: {path} not found. THP may not be compiled into this kernel.", file=sys.stderr)
+        sys.exit(1)
+
 def parse_size(size_str):
     size_str = size_str.upper().strip()
     units = {'G': 1024**3, 'M': 1024**2, 'K': 1024, 'B': 1}
@@ -42,6 +58,7 @@ def print_coverage_checkpoint(label, start_addr, target_bytes):
 
 def main():
     check_root()
+    check_thp_madvise()  # Enforce system tuning constraint early
 
     parser = argparse.ArgumentParser(description="Standalone THP Allocator Utility")
     parser.add_argument("memory", help="Memory size (e.g., 512M, 1G)")
