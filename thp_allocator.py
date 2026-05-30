@@ -15,20 +15,11 @@ def check_root():
         sys.exit(1)
 
 def check_thp_madvise():
-    """Hard check ensuring system-level THP is set strictly to 'madvise'."""
     path = "/sys/kernel/mm/transparent_hugepage/enabled"
-    try:
-        with open(path, "r") as f:
-            content = f.read().strip()
-            if "[madvise]" not in content:
-                print(f"ERROR: System-level THP is not configured to 'madvise'.", file=sys.stderr)
-                print(f"       Current configuration state: {content}", file=sys.stderr)
-                print(f"       Fix with: echo madvise > {path}", file=sys.stderr)
-                sys.exit(1)
-            print("[*] System-level THP verification passed: [madvise] is active.")
-    except FileNotFoundError:
-        print(f"ERROR: {path} not found. THP may not be compiled into this kernel.", file=sys.stderr)
-        sys.exit(1)
+    with open(path, "r") as f:
+        if "[madvise]" not in f.read():
+            print(f"ERROR: THP not configured to 'madvise'.", file=sys.stderr)
+            sys.exit(1)
 
 def parse_size(size_str):
     size_str = size_str.upper().strip()
@@ -37,8 +28,10 @@ def parse_size(size_str):
         return int(size_str[:-1]) * units[size_str[-1]]
     return int(size_str)
 
-def get_thp_coverage(start_addr):
+def get_thp_and_locked_status(start_addr):
+    """Parses smaps to extract both THP and Locked metrics for our memory block."""
     anon_huge_pages = 0
+    locked_pages = 0
     in_range = False
     with open("/proc/self/smaps", "r") as f:
         for line in f:
@@ -47,18 +40,31 @@ def get_thp_coverage(start_addr):
                 if "-" in parts[0]:
                     vm_start, vm_end = [int(x, 16) for x in parts[0].split("-")]
                     in_range = (vm_start <= start_addr < vm_end)
-            if in_range and line.startswith("AnonHugePages:"):
-                anon_huge_pages += int(line.split()[1])
-    return anon_huge_pages
+            if in_range:
+                if line.startswith("AnonHugePages:"):
+                    anon_huge_pages += int(line.split()[1])
+                elif line.startswith("Locked:"):
+                    locked_pages += int(line.split()[1])
+    return anon_huge_pages, locked_pages
 
-def print_coverage_checkpoint(label, start_addr, target_bytes):
-    huge_kb = get_thp_coverage(start_addr)
-    coverage = (huge_kb / (target_bytes / 1024)) * 100
-    print(f"CHECKPOINT [{label}]: {coverage:.2f}%")
+def verify_locked_thp_efficiency(label, start_addr, target_bytes):
+    huge_kb, locked_kb = get_thp_and_locked_status(start_addr)
+    target_kb = target_bytes / 1024
+    
+    # Calculate what percentage of the locked memory is actually huge pages
+    thp_of_locked_pct = (huge_kb / locked_kb * 100) if locked_kb > 0 else 0
+    overall_coverage = (huge_kb / target_kb * 100)
+    
+    print(f"\nCHECKPOINT [{label}]:")
+    print(f" -> Total Locked Memory: {locked_kb:,.0f} kB / {target_kb:,.0f} kB")
+    print(f" -> Of that, THP Backed: {huge_kb:,.0f} kB ({thp_of_locked_pct:.2f}%)")
+    
+    # Custom regex string output for the test matrix runner to intercept
+    print(f"CHECKPOINT [{label}]: {overall_coverage:.2f}%")
 
 def main():
     check_root()
-    check_thp_madvise()  # Enforce system tuning constraint early
+    check_thp_madvise()
 
     parser = argparse.ArgumentParser(description="Standalone THP Allocator Utility")
     parser.add_argument("memory", help="Memory size (e.g., 512M, 1G)")
@@ -92,14 +98,14 @@ def main():
         except OSError as e:
             print(f"[-] MADV_COLLAPSE failed: {e}", file=sys.stderr)
 
-    # Immediate snapshot right after the steps execute
-    print_coverage_checkpoint("IMMEDIATE", mem_address, num_bytes)
+    # Evaluate validation metrics immediately
+    verify_locked_thp_efficiency("IMMEDIATE", mem_address, num_bytes)
 
     # Settle time
     time.sleep(args.duration)
 
-    # Final snapshot
-    print_coverage_checkpoint("FINAL", mem_address, num_bytes)
+    # Evaluate validation metrics after background settlement window
+    verify_locked_thp_efficiency("FINAL", mem_address, num_bytes)
 
     # Cleanup
     libc.munlock(ctypes.c_void_p(mem_address), ctypes.c_size_t(num_bytes))
